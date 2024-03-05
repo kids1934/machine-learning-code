@@ -1,0 +1,154 @@
+import numpy as np
+import torch
+from torch.utils.data import Dataset
+from torch.utils.data import DataLoader
+import torch.nn.functional as F
+from torchvision import transforms
+from torchvision import datasets
+import torch.optim as optim
+import os
+from PIL import Image
+from torch.utils.data import ConcatDataset
+
+
+def to_rgb(image):
+    # 将灰度图像转换为RGB模式
+    image_rgb = image.convert('RGB')
+    return image_rgb
+
+
+batch_size = 20
+transform = transforms.Compose([
+    transforms.Resize((64, 64)),
+    transforms.Lambda(to_rgb),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])  # 彩色图像的均值和标准差
+])
+
+
+class MyData(Dataset):
+    def __init__(self, root_dir, label_dir, transform=None):
+        self.root_dir = root_dir
+        self.label_dir = label_dir
+        self.path = os.path.join(self.root_dir, self.label_dir)
+        self.img_path = os.listdir(self.path)
+        self.transform = transform
+
+    def __getitem__(self, idx):
+        img_name = self.img_path[idx]
+        img_item_path = os.path.join(self.root_dir, self.label_dir, img_name)
+        img = Image.open(img_item_path)
+        img = self.transform(img)
+
+        # 获取真实标签
+        label = self.label_dir
+        if label == 'cat':
+            label = 0
+        elif label == 'dog':
+            label = 1
+        else:
+            label = 2
+
+        return img, label
+
+    def __len__(self):
+        return len(self.img_path)
+
+
+root_dir = "afhq/train"
+cat_label_dir = "cat"
+dog_label_dir = "dog"
+wild_label_dir = 'wild'
+cat_dataset = MyData(root_dir, cat_label_dir, transform=transform)
+dog_dataset = MyData(root_dir, dog_label_dir, transform=transform)
+wild_dataset = MyData(root_dir, wild_label_dir, transform=transform)
+train_dataset = ConcatDataset([cat_dataset, dog_dataset, wild_dataset])
+root_dir2 = 'afhq/val'
+cat_label_dir2 = 'cat'
+dog_label_dir2 = 'dog'
+wild_label_dir2 = 'wild'
+cat_dataset2 = MyData(root_dir2, cat_label_dir2, transform=transform)
+dog_dataset2 = MyData(root_dir2, dog_label_dir2, transform=transform)
+wild_dataset2 = MyData(root_dir2, wild_label_dir2, transform=transform)
+text_dataset = ConcatDataset([cat_dataset2, dog_dataset2, wild_dataset2])
+
+
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+text_loader = DataLoader(text_dataset, batch_size=batch_size, shuffle=True)
+
+
+class ModelNet(torch.nn.Module):
+    def __init__(self):
+        super(ModelNet, self).__init__()
+        self.conv1 = torch.nn.Conv2d(3, 10, 2)
+        self.conv2 = torch.nn.Conv2d(10, 20, 2)
+        self.pooling1 = torch.nn.MaxPool2d(2)
+        self.conv3 = torch.nn.Conv2d(20, 40, 2)
+        self.conv4 = torch.nn.Conv2d(40, 80, 2)
+        self.pooling2 = torch.nn.MaxPool2d(2)
+        self.conv5 = torch.nn.Conv2d(80, 120, 2)
+        self.conv6 = torch.nn.Conv2d(120, 256, 2)
+        self.pooling3 = torch.nn.MaxPool2d(2)
+        self.fc1 = torch.nn.Linear(9216, 1280)
+        self.fc3 = torch.nn.Linear(1280, 3)
+
+    def forward(self, x):
+        batch_size = x.size(0)
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = self.pooling1(x)
+        x = F.relu(self.conv3(x))
+        x = F.relu(self.conv4(x))
+        x = self.pooling2(x)
+        x = F.relu(self.conv5(x))
+        x = F.relu(self.conv6(x))
+        x = self.pooling3(x)
+        x = x.view(batch_size, -1)
+        x = F.relu(self.fc1(x))
+        x = self.fc3(x)
+        return x
+
+
+device = torch.device("cuda" if torch.cuda.is_available() else 'cpu')
+model = ModelNet()
+model.to(device)
+criterion = torch.nn.CrossEntropyLoss()
+optimizer = optim.SGD(model.parameters(), lr=0.01)
+
+
+def train():
+    run_loss = 0.0
+    for i, data in enumerate(train_loader, 0):
+        x, y = data
+        x, y = x.to(device), y.to(device)
+        optimizer.zero_grad()
+
+        output = model(x)
+        loss = criterion(output, y)
+        loss.backward()
+        optimizer.step()
+        run_loss += loss.item()
+
+        if i % 200 == 0:
+            print("now %d loss: %.5f" % (i, run_loss / 300 / batch_size))
+            run_loss = 0
+
+
+def text():
+    correct = 0.0
+    total = 0.0
+    with torch.no_grad():
+        for i, data in enumerate(text_loader):
+            x, y = data
+            x, y = x.to(device), y.to(device)
+            output = model(x)
+            _, predicted = torch.max(output.data, dim=1)
+            total += y.size(0)
+            correct += (predicted == y).sum().item()
+        print('正确率: %d %%' % (100 * correct / total))
+
+
+if __name__ == '__main__':
+    for epoch in range(30):
+        train()
+        text()
