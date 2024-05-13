@@ -146,9 +146,13 @@ def text():
             total += y.size(0)
             correct += (predicted == y).sum().item()
         print('正确率: %d %%' % (100 * correct / total))
+    return correct
 
 
 if __name__ == '__main__':
     for epoch in range(30):
         train()
-        text()
+        p = text()
+        mylist.append(p)  # 将正确率添加到列表中
+        if p == max(mylist):
+            torch.save(model.state_dict(), 'my_model.pt')  # 只保存模型参数而不包括模型结构
